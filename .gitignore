@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# Virtual environments
+venv/
+
+# Pulumi state (if using local backend)
+.pulumi/
+
+# Pulumi stack configs containing secrets
+Pulumi.*.yaml
+
+
+# Environment variables
+.env
+.env.*
+
+# OpenStack credentials
+openrc.sh
+*.openrc
