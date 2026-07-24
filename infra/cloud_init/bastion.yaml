@@ -1,0 +1,8 @@
+#cloud-config
+
+packages:
+  - fail2ban
+
+runcmd:
+  - systemctl enable fail2ban
+  - systemctl start fail2ban

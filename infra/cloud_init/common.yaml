@@ -1,0 +1,15 @@
+#cloud-config
+package_update: false
+package_upgrade: false
+packages:
+  - qemu-guest-agent
+  - python3
+  - ca-certificates
+manage_resolv_conf: true
+resolv_conf:
+  nameservers:
+    - 8.8.8.8
+    - 1.1.1.1
+runcmd:
+  - systemctl enable qemu-guest-agent || true
+  - systemctl start qemu-guest-agent || true

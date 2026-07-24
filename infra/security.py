@@ -1,6 +1,30 @@
 import pulumi_openstack as openstack
 
 
+
+# ==========================
+# Bastion Security Group
+# ==========================
+
+bastion_security_group = openstack.networking.SecGroup(
+    "bastion-security-group",
+    name="bastion-security-group",
+    description="Security group for bastion host"
+)
+
+
+# SSH from Internet
+bastion_ssh_rule = openstack.networking.SecGroupRule(
+    "bastion-ssh-rule",
+    security_group_id=bastion_security_group.id,
+    direction="ingress",
+    ethertype="IPv4",
+    protocol="tcp",
+    port_range_min=22,
+    port_range_max=22,
+    remote_ip_prefix="0.0.0.0/0"
+)
+
 # ==========================
 # Load Balancer Security Group
 # ==========================
@@ -50,7 +74,7 @@ app_security_group = openstack.networking.SecGroup(
 )
 
 
-# SSH access (temporary for development)
+# SSH only from Bastion
 app_ssh_rule = openstack.networking.SecGroupRule(
     "app-ssh-rule",
     security_group_id=app_security_group.id,
@@ -59,7 +83,7 @@ app_ssh_rule = openstack.networking.SecGroupRule(
     protocol="tcp",
     port_range_min=22,
     port_range_max=22,
-    remote_ip_prefix="0.0.0.0/0"
+    remote_group_id=bastion_security_group.id
 )
 
 
@@ -110,7 +134,7 @@ db_ssh_rule = openstack.networking.SecGroupRule(
     protocol="tcp",
     port_range_min=22,
     port_range_max=22,
-    remote_ip_prefix="0.0.0.0/0"
+    remote_group_id=bastion_security_group.id
 )
 
 
@@ -124,4 +148,17 @@ db_postgres_rule = openstack.networking.SecGroupRule(
     port_range_min=5432,
     port_range_max=5432,
     remote_group_id=app_security_group.id
+)
+
+
+# SSH to access the vm of haproxy 
+lb_ssh_rule = openstack.networking.SecGroupRule(
+    "lb-ssh-from-bastion-rule",
+    security_group_id=lb_security_group.id,
+    direction="ingress",
+    ethertype="IPv4",
+    protocol="tcp",
+    port_range_min=22,
+    port_range_max=22,
+    remote_group_id=bastion_security_group.id
 )

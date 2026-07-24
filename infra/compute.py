@@ -1,9 +1,19 @@
 import pulumi
 import pulumi_openstack as openstack
 
+from pathlib import Path
 from network import private_network
 from security import app_security_group, db_security_group
 from storage import db_volume
+
+
+# ==========================
+# Cloud-init
+# ==========================
+
+common_userdata = Path(
+    "cloud_init/common.yaml"
+).read_text()
 
 
 # ==========================
@@ -61,10 +71,19 @@ db_port = openstack.networking.Port(
 
 app_vm_1 = openstack.compute.Instance(
     "app-vm-1",
+
     name="app-vm-1",
+
     image_id=ubuntu_image,
     flavor_id=app_flavor,
+
     key_pair=keypair,
+
+    # Enable config drive for cloud-init metadata
+    config_drive=True,
+
+    # Cloud-init script
+    user_data=common_userdata,
 
     networks=[
         {
@@ -80,10 +99,17 @@ app_vm_1 = openstack.compute.Instance(
 
 app_vm_2 = openstack.compute.Instance(
     "app-vm-2",
+
     name="app-vm-2",
+
     image_id=ubuntu_image,
     flavor_id=app_flavor,
+
     key_pair=keypair,
+
+    config_drive=True,
+
+    user_data=common_userdata,
 
     networks=[
         {
@@ -99,10 +125,17 @@ app_vm_2 = openstack.compute.Instance(
 
 db_vm = openstack.compute.Instance(
     "db-vm",
+
     name="db-vm",
+
     image_id=ubuntu_image,
     flavor_id=db_flavor,
+
     key_pair=keypair,
+
+    config_drive=True,
+
+    user_data=common_userdata,
 
     networks=[
         {
@@ -118,13 +151,14 @@ db_vm = openstack.compute.Instance(
 
 db_volume_attachment = openstack.compute.VolumeAttach(
     "db-volume-attachment",
+
     instance_id=db_vm.id,
     volume_id=db_volume.id
 )
 
 
 # ==========================
-# Exports for other modules
+# Exports
 # ==========================
 
 pulumi.export("app_vm_1_id", app_vm_1.id)
