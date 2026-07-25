@@ -1,0 +1,132 @@
+---
+# This role was missing entirely — db-vm existed in the Pulumi stack
+# (infra.md) with an attached Cinder volume, but nothing installed or
+# started PostgreSQL/Redis on it. group_vars/all.yml's postgres_host/
+# redis_host defaulting to 127.0.0.1 only ever worked for the old
+# single-node docker-compose.yml; on the real multi-node topology it
+# points nowhere. This role fixes that.
+#
+# Mirrors docker-compose.yml's db/redis services (same images, same
+# Redis flags) so behaviour matches what's already been tested locally —
+# only the credentials change (real vault secret instead of the
+# hardcoded "hackership"/"hackership" dev default).
+
+- name: Discover the attached data volume (excludes the root disk)
+  ansible.builtin.shell: |
+    set -o pipefail
+    lsblk -ndo NAME,TYPE,MOUNTPOINT | awk '$2=="disk" && $3=="" {print $1; exit}'
+  args:
+    executable: /bin/bash
+  register: data_disk_name
+  changed_when: false
+
+- name: Fail early with a clear message if no free disk was found
+  ansible.builtin.fail:
+    msg: >
+      No unmounted block device found for the Postgres data volume.
+      Run `lsblk` on db-vm manually and set db_data_device explicitly
+      in group_vars/all.yml if device naming differs on this provider.
+  when: data_disk_name.stdout | length == 0 and db_data_device is not defined
+
+- name: Set the data device fact
+  ansible.builtin.set_fact:
+    resolved_db_data_device: "{{ db_data_device | default('/dev/' + data_disk_name.stdout) }}"
+
+- name: Format the data volume (ext4) — only if it has no filesystem yet
+  community.general.filesystem:
+    fstype: ext4
+    dev: "{{ resolved_db_data_device }}"
+
+- name: Create the data mount point
+  ansible.builtin.file:
+    path: "{{ db_data_mount }}"
+    state: directory
+    mode: "0750"
+
+- name: Mount the data volume persistently
+  ansible.posix.mount:
+    path: "{{ db_data_mount }}"
+    src: "{{ resolved_db_data_device }}"
+    fstype: ext4
+    state: mounted
+
+- name: Ensure Postgres/Redis data subdirectories exist with correct ownership
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: "999"   # postgres image's internal uid; matches official postgres:16-alpine
+    group: "999"
+    mode: "0750"
+  loop:
+    - "{{ db_data_mount }}/postgres"
+
+- name: Ensure Redis data subdirectory exists
+  ansible.builtin.file:
+    path: "{{ db_data_mount }}/redis"
+    state: directory
+    owner: "{{ ansible_user }}"
+    group: "{{ ansible_user }}"
+    mode: "0750"
+
+- name: Create deploy directory for db-tier compose file
+  ansible.builtin.file:
+    path: "{{ hackership_deploy_dir }}"
+    state: directory
+    owner: "{{ ansible_user }}"
+    group: "{{ ansible_user }}"
+    mode: "0750"
+
+- name: Deploy podman-compose.yml (postgres + redis)
+  ansible.builtin.template:
+    src: podman-compose.yml.j2
+    dest: "{{ hackership_deploy_dir }}/podman-compose.yml"
+    owner: "{{ ansible_user }}"
+    group: "{{ ansible_user }}"
+    mode: "0640"
+  register: db_compose_file
+
+- name: Deploy systemd unit for the db tier
+  ansible.builtin.template:
+    src: hackership-db.service.j2
+    dest: /etc/systemd/system/hackership-db.service
+    mode: "0644"
+  register: db_systemd_unit
+
+- name: Reload systemd if the unit changed
+  ansible.builtin.systemd:
+    daemon_reload: true
+  when: db_systemd_unit.changed
+
+- name: (Re)start and enable the db tier
+  ansible.builtin.systemd:
+    name: hackership-db
+    state: restarted
+    enabled: true
+  when: db_compose_file.changed or db_systemd_unit.changed
+
+- name: Start the db tier if not already running (no-op restart avoided otherwise)
+  ansible.builtin.systemd:
+    name: hackership-db
+    state: started
+    enabled: true
+
+- name: Wait for PostgreSQL to accept connections
+  ansible.builtin.command: >
+    podman exec hackership-postgres pg_isready -U {{ postgres_user }}
+  register: pg_ready
+  changed_when: false
+  retries: 12
+  delay: 5
+  until: pg_ready.rc == 0
+  become: true
+  become_user: "{{ ansible_user }}"
+
+- name: Wait for Redis to accept connections
+  ansible.builtin.command: podman exec hackership-redis redis-cli ping
+  register: redis_ready
+  changed_when: false
+  retries: 12
+  delay: 5
+  until: "'PONG' in redis_ready.stdout"
+  become: true
+  become_user: "{{ ansible_user }}"

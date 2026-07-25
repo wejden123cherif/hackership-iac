@@ -1,0 +1,74 @@
+---
+# Variables communes. Noms d'env var alignés EXACTEMENT sur .env.example du
+# repo applicatif (ne pas renommer sans mettre à jour le code app en retour).
+#
+# Secrets réels dans group_vars/vault.yml (chiffré, voir docs/secrets.md).
+
+project_name: hackership
+
+# --- Dépôt applicatif ---
+hackership_repo_url: "https://git.felcloud.tn/hackership/hackership.git"   # à confirmer
+hackership_version: "main"
+hackership_deploy_dir: /opt/hackership
+
+# --- Flask ---
+flask_app: wsgi.py
+flask_env: production
+secret_key: "{{ vault_secret_key }}"
+
+# --- PostgreSQL ---
+# Was hardcoded to 127.0.0.1 (only correct for the old single-node
+# docker-compose). Now resolves automatically from the [db] group in
+# inventory (see scripts/generate_inventory.sh) — falls back to
+# 127.0.0.1 only if no db group is defined, for local single-node testing.
+postgres_host: "{{ hostvars[groups['db'][0]].ansible_host if (groups['db'] | default([])) else '127.0.0.1' }}"
+postgres_port: 5432
+postgres_db: hackership
+postgres_user: hackership
+postgres_password: "{{ vault_postgres_password }}"
+database_url: "postgresql://{{ postgres_user }}:{{ postgres_password }}@{{ postgres_host }}:{{ postgres_port }}/{{ postgres_db }}"
+
+# --- Redis ---
+# Same fix as postgres_host above — Redis now runs on db-vm (roles/db),
+# not per-node, since Flask-SocketIO's message_queue needs one shared
+# instance to actually work across app nodes (see known-limitations.md).
+redis_host: "{{ hostvars[groups['db'][0]].ansible_host if (groups['db'] | default([])) else '127.0.0.1' }}"
+redis_port: 6379
+redis_url: "redis://{{ redis_host }}:{{ redis_port }}/0"
+
+# --- db-tier data volume (roles/db) ---
+# Cinder volume attached in infra/compute.py. Device name is
+# auto-detected (first unmounted disk); override db_data_device
+# explicitly here if that detection ever picks the wrong disk.
+db_data_mount: /data/hackership-db
+
+# --- Host firewall (roles/security) — per-group port lists ---
+# db-vm must NOT open 80/443 (no web server there), and app nodes must
+# NOT open 5432/6379 (no db there) — see group_vars/app.yml and
+# group_vars/db.yml for the actual per-group values.
+ufw_allowed_tcp_ports: []
+
+# --- Uploads (limitation connue : volumes locaux par nœud, non partagés
+# entre app1/app2 tant que le passage à de l'object storage n'est pas fait -
+# accepté pour le pilote, trafic faible. Voir docs/known-limitations.md) ---
+upload_folder: app/static/images/avatars
+avatar_url: /static/images/avatars
+cv_upload_folder: app/static/uploads/cvs
+cv_url: /static/uploads/cvs
+
+# --- Intégrations tierces ---
+groq_api_key: "{{ vault_groq_api_key }}"
+email_host: "example.felcloud.io"
+email_port: 465
+email_user: "example@felcloud.tn"
+smtp_password: "{{ vault_smtp_password }}"
+
+# --- Application runtime ---
+app_container_port: 5000
+gunicorn_worker_class: eventlet
+gunicorn_workers: 1   # imposé par le code actuel (eventlet + 1 worker), pas configurable sans changement app
+
+# --- Health check ---
+# Pas de route /health dédiée dans l'app actuellement (cf. __init__.py) ;
+# le check existant (docker-compose) et celui utilisé ici ciblent l'index "/".
+healthcheck_path: "/"
