@@ -1,0 +1,35 @@
+---
+# Ce rôle ne fait QUE préparer la configuration Nginx (fichier de conf +
+# répertoires de contenu statique). Le conteneur Nginx lui-même est démarré
+# par le rôle hackership_app via le podman-compose qui référence ce fichier
+# (même modèle que le docker-compose.yml existant : nginx + web ensemble sur
+# le même nœud), pour éviter deux rôles qui gèrent le même cycle de vie de
+# conteneur.
+#
+# TLS : pas géré ici pour l'instant. Terminer le TLS au niveau du LB
+# (Octavia) ou ici (Nginx + certbot) est une décision à prendre avec
+# Person 1/2 une fois leur design de LB confirmé — voir docs/known-limitations.md.
+
+- name: Allow rootless Podman to bind privileged ports (nginx needs 80/443)
+  ansible.posix.sysctl:
+    name: net.ipv4.ip_unprivileged_port_start
+    value: "80"
+    state: present
+    reload: true
+
+- name: Créer le répertoire de configuration Nginx
+  file:
+    path: "{{ hackership_deploy_dir }}/nginx"
+    state: directory
+    owner: "{{ ansible_user }}"
+    group: "{{ ansible_user }}"
+    mode: "0750"
+
+- name: Déployer nginx.conf
+  template:
+    src: nginx.conf.j2
+    dest: "{{ hackership_deploy_dir }}/nginx/nginx.conf"
+    owner: "{{ ansible_user }}"
+    group: "{{ ansible_user }}"
+    mode: "0644"
+  notify: restart nginx container

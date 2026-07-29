@@ -1,0 +1,57 @@
+version: "3.8"
+
+# Adapté du docker-compose.yml existant : db/redis retirés (tournent sur le
+# nœud de données dédié, cf. roles/db). nginx + web restent couplés sur le
+# même nœud applicatif, comme dans le compose d'origine, sur le même réseau
+# bridge (résolution DNS "web:5000" inchangée par rapport au nginx.conf
+# existant).
+#
+# Limitation connue : volumes "avatars"/"cvs" sont locaux à CE nœud, non
+# partagés avec les autres nœuds app. Accepté pour le pilote (trafic faible) ;
+# migration vers de l'object storage prévue plus tard.
+
+services:
+  nginx:
+    image: docker.io/library/nginx:alpine
+    container_name: hackership-nginx
+    ports:
+      - "80:80"
+    volumes:
+      - "{{ hackership_deploy_dir }}/nginx/nginx.conf:/etc/nginx/nginx.conf:ro"
+      - "{{ hackership_deploy_dir }}/src/app/static:/app/static:ro"
+      - "avatars:/app/static/images/avatars:ro"
+      - "cvs:/app/static/uploads/cvs:ro"
+    depends_on:
+      web:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - hackership_net
+
+  web:
+    image: "hackership-app:{{ hackership_version }}"
+    container_name: hackership-web
+    env_file: "{{ hackership_deploy_dir }}/app.env"
+    command: >
+      gunicorn --worker-class {{ gunicorn_worker_class }} -w {{ gunicorn_workers }}
+      --bind 0.0.0.0:{{ app_container_port }} wsgi:app
+    volumes:
+      - "avatars:/app/app/static/images/avatars"
+      - "cvs:/app/app/static/uploads/cvs"
+    healthcheck:
+      test: ["CMD-SHELL", "python3 -c \"import urllib.request; urllib.request.urlopen('http://localhost:{{ app_container_port }}/')\""]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+    networks:
+      - hackership_net
+
+networks:
+  hackership_net:
+    driver: bridge
+
+volumes:
+  avatars:
+  cvs:

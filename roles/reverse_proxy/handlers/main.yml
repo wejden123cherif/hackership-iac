@@ -1,0 +1,7 @@
+---
+- name: restart nginx container
+  systemd:
+    name: hackership
+    state: restarted
+  # Note : le conteneur nginx fait partie du même podman-compose que "web"
+  # (rôle hackership_app), géré par le service systemd unique "hackership".

@@ -1,0 +1,21 @@
+# DO NOT hand-fill this file. Run scripts/generate_inventory.sh instead —
+# it reads live Pulumi stack outputs (infra/__main__.py) and writes
+# inventory/hosts.ini automatically, including the ProxyJump through the
+# bastion (app/db nodes have no floating IP by design).
+#
+# This example just documents the shape the generated file takes:
+
+[app]
+app1 ansible_host=192.168.88.XXX
+app2 ansible_host=192.168.88.XXX
+
+[db]
+db1 ansible_host=192.168.88.XXX
+
+[hackership:children]
+app
+
+[all:vars]
+ansible_user=ubuntu
+bastion_private_ip=192.168.88.XXX
+ansible_ssh_common_args='-o ProxyCommand="ssh -i <path_to_your_key> -W %h:%p -q ubuntu@<bastion_floating_ip>"'

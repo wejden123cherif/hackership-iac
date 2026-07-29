@@ -1,0 +1,14 @@
+---
+# Mise à jour applicative seule (nouvelle version de code), sans re-jouer
+# base/security. Rolling, un nœud à la fois.
+#
+# Usage : ansible-playbook playbooks/deploy.yml --ask-vault-pass
+#         ansible-playbook playbooks/deploy.yml -e hackership_version=<tag> --ask-vault-pass
+
+- name: Déploiement applicatif rolling
+  hosts: app
+  become: true
+  serial: 1
+  max_fail_percentage: 0
+  roles:
+    - hackership_app
