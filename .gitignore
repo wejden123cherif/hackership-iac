@@ -21,3 +21,7 @@ Pulumi.*.yaml
 # OpenStack credentials
 openrc.sh
 *.openrc
+
+
+userdata.py 
+#we used instead the cloud init 

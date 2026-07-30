@@ -1,2 +1,21 @@
-*.pyc
+# Python cache & virtualenv
+__pycache__/
+*.py[cod]
+*$py.class
 venv/
+.venv/
+
+# Migration scripts
+fix-state.sh
+
+# OpenStack credentials & secrets
+openrc.sh
+*.openrc
+.env
+.env.*
+*.pem
+*.key
+id_rsa*
+
+# Local Pulumi state (if applicable)
+.pulumi/

@@ -15,16 +15,19 @@ hackership-iac/
 ├── docs/
 │   ├── architecture.md                # HA topology, components
 │   ├── deployment-guide.md            # Step-by-step deployment
+│   ├── import-existing-infrastructure.md # Existing infrastructure import guide
 │   ├── operations-guide.md            # Common tasks
 │   ├── troubleshooting-guide.md       # Issues + solutions
 │   └── architecture-diagram.png       # Visual topology
-├── infra/                             # Pulumi (Person 1-2)
+├── infra/                             # Pulumi IaC
 │   ├── Pulumi.yaml                    # Project config
-│   ├── Pulumi.<stack>.yaml            # Stack config
-│   ├── \_\_main\_\_.py                    # Main Pulumi code
-│   ├── network.py                     # Network resources (Person 1)
-│   ├── compute.py                     # Compute resources (Person 1)
-│   ├── loadbalancer.py                # LB resources (Person 2)
+│   ├── Pulumi.dev.yaml                # Dev Stack config
+│   ├── __main__.py                    # Main Pulumi exports & imports
+│   ├── network.py                     # Network lookups (hackership)
+│   ├── compute.py                     # Compute VMs (bastion, app-vm-1/2, db-vm)
+│   ├── storage.py                     # Persistent volume resources
+│   ├── security.py                    # Security group resources
+│   ├── floating_ips.py                # Floating IP allocations & assignments
 │   └── .gitignore
 ├── ansible/                           # Ansible (Person 3)
 │   ├── inventory.ini                  # Host inventory (or generated from Pulumi)
@@ -109,6 +112,8 @@ curl http://<lb_floating_ip>/
 
 See `docs/deployment-guide.md` for the full walkthrough, including LB health
 monitor configuration and the destroy/up reproducibility test.
+
+> **Existing Infrastructure Adoption**: To bring existing live OpenStack VMs, volumes, and floating IPs under Pulumi management without recreate/destroy operations, see [docs/import-existing-infrastructure.md](docs/import-existing-infrastructure.md).
 
 ## Common tasks
 

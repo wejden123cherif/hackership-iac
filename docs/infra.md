@@ -1,98 +1,121 @@
-# Hackership — OpenStack Foundation Infrastructure Report
+# Hackership - OpenStack Infrastructure Report
 
-**Scope:** Network, security groups, compute, and storage layers, provisioned via Pulumi (Python).
-**Status:** Complete, validated with `pulumi up` (0 errors).
+**Scope:** Network, security groups, compute, storage, bastion access, and public entry points provisioned via Pulumi (Python).
 
-## 1. What was built
+## 1. Current architecture
 
-A 3-tier architecture on OpenStack:
+The infrastructure now uses two public entry points:
 
-```
-                          Internet
-                             │
-                             ▼
-                     ┌───────────────┐
-                     │ Load Balancer │
-                     │(lb-security-  │
-                     │    group)     │
-                     └───────┬───────┘
-                             │
-                     HTTP/HTTPS traffic
-                             │
-              ┌──────────────┴──────────────┐
-              ▼                             ▼
-    ┌───────────────────┐        ┌───────────────────┐
-    │ Application VM 1   │        │ Application VM 2   │
-    │ (app-security-     │        │ (app-security-     │
-    │      group)        │        │      group)        │
-    └──────────┬─────────┘        └──────────┬─────────┘
-               │                             │
-               └──────────────┬──────────────┘
-                               │
-                       PostgreSQL 5432
-                               │
-                               ▼
-                     ┌───────────────┐
-                     │  Database VM  │
-                     │ (db-security- │
-                     │    group)     │
-                     └───────────────┘
+- **Bastion host:** public SSH entry point for administration.
+- **HAProxy VM / load balancer:** public HTTP/HTTPS entry point for application traffic.
+
+Application and database VMs stay private. Admin SSH to those nodes goes through the bastion over the private network.
+
+```text
+                              Internet
+                                  |
+                           Floating IPs
+                                  |
+               +------------------+------------------+
+               |                                     |
+       +-------v--------+                    +-------v--------+
+       | Bastion Host   |                    | HAProxy VM      |
+       | Ubuntu         |                    | Ubuntu          |
+       | Public FIP     |                    | Public FIP      |
+       | Private IP     |                    | Private IP      |
+       +-------+--------+                    +-------+--------+
+               |                                     |
+               | SSH                                 | HTTP/HTTPS
+               |                                     |
+---------------+-------------------------------------+---------------
+                         Private Network
+                         192.168.88.0/24
+               |                                     |
+       +-------+--------+                    +-------+--------+
+       |                |                    |                |
++------v------+  +------v------+      +------v------+
+| App VM 1    |  | App VM 2    |      | DB VM       |
+| Ubuntu      |  | Ubuntu      |      | PostgreSQL  |
+| Private IP  |  | Private IP  |      | Private IP  |
++-------------+  +-------------+      +-------------+
 ```
 
 ## 2. Network
 
-| Resource | ID |
+| Resource | Purpose |
 |---|---|
-| Private network | `3064b1da-3e73-4454-978a-05dd1734a95f` |
-| Private subnet | `369dce09-2947-4af6-8f5f-f15345bd701d` |
+| `private_network` | Internal network shared by bastion, HAProxy, app VMs, and DB VM |
+| `private_subnet` | Private subnet for internal addresses, currently `192.168.88.0/24` |
+| Floating IP for bastion | Public SSH entry point |
+| Floating IP for HAProxy/LB | Public HTTP/HTTPS entry point |
 
-Used for all internal communication between app servers, DB server, and LB components.
+The app and database VMs do not need floating IPs.
 
 ## 3. Security groups
 
-Three groups, least-privilege by design:
-
-| Group | ID | Purpose |
-|---|---|---|
-| `lb-security-group` | `6e0472d2-40ec-4d53-8e30-e96085ab8eb3` | Public HTTP/HTTPS entry point |
-| `app-security-group` | `3f35056a-c8a5-473f-931c-67d24f28fb58` | Application servers |
-| `db-security-group` | `5a0feb1c-32f3-4102-8ffe-67907d9ede45` | Database server |
+| Group | Purpose |
+|---|---|
+| `bastion-security-group` | Allows SSH from the internet to the bastion |
+| `lb-security-group` | Allows public HTTP/HTTPS to HAProxy/LB and SSH only from bastion |
+| `app-security-group` | Allows app traffic from LB and SSH only from bastion |
+| `db-security-group` | Allows PostgreSQL from app servers and SSH only from bastion |
 
 **Rules:**
-- `lb-security-group`: ingress 80/443 from `0.0.0.0/0`.
-- `app-security-group`: ingress 80/443 restricted to `lb-security-group` only (tightened from an initial `192.168.88.0/24`-wide rule); SSH (22) open for dev/testing only.
-- `db-security-group`: ingress 5432 restricted to `app-security-group` only; SSH (22) open for admin, to be locked down later.
 
-Net effect: app servers are reachable only through the LB; the database is reachable only from the app tier — no direct public path to either.
+- `bastion-security-group`: ingress TCP/22 from `0.0.0.0/0` for initial access.
+- `lb-security-group`: ingress TCP/80 and TCP/443 from `0.0.0.0/0`; TCP/22 from `bastion-security-group`.
+- `app-security-group`: ingress TCP/80 and TCP/443 from `lb-security-group`; TCP/22 from `bastion-security-group`.
+- `db-security-group`: ingress TCP/5432 from `app-security-group`; TCP/22 from `bastion-security-group`.
+
+Recommended hardening: once the admin public IP is known, restrict bastion SSH from `0.0.0.0/0` to that CIDR.
 
 ## 4. Compute
 
-| VM | ID | Flavor | Specs | Security group |
-|---|---|---|---|---|
-| `app-vm-1` | `54f60358-d24a-491c-9e26-54d5af04e4e3` | 1004 | 2 vCPU / 4GB | `app-security-group` |
-| `app-vm-2` | `c901a386-eec9-4c4a-afb0-f8a036b013b8` | 1004 | 2 vCPU / 4GB | `app-security-group` |
-| `db-vm` | `30ce391b-d91d-4fc9-bcc7-c1d0378b6f49` | 1005 | 2 vCPU / 8GB | `db-security-group` |
-
-App VMs are identical, ready to be added as LB pool members. All on Ubuntu 24.04 LTS.
+| VM | Role | Network exposure | Security group |
+|---|---|---|---|
+| `bastion-vm` | SSH jump host | Floating IP + private IP | `bastion-security-group` |
+| HAProxy VM | Public application entry point | Floating IP + private IP | `lb-security-group` |
+| `app-vm-1` | Application node | Private IP only | `app-security-group` |
+| `app-vm-2` | Application node | Private IP only | `app-security-group` |
+| `db-vm` | PostgreSQL database | Private IP only | `db-security-group` |
 
 ## 5. Storage
 
-Persistent volume `8c0ed5e6-017f-4ad2-8345-50d949082feb` attached to `db-vm` for PostgreSQL data.
+The database VM uses a persistent block volume for PostgreSQL data.
 
-## 6. Stack outputs (exported for the team)
+## 6. Access paths
 
-`network_id`, `subnet_id`, `app_security_group_id`, `db_security_group_id`, `lb_security_group_id`, `app_vm_1_id`, `app_vm_2_id`, `db_vm_id`, `db_volume_id`
+Admin SSH:
 
-These feed directly into the load-balancer teammate's work (pool members, health checks).
+```bash
+ssh -i key.pem ubuntu@<bastion_floating_ip>
+ssh ubuntu@<private_vm_ip>
+```
 
-## 7. Validation
+Or from the local machine with ProxyJump:
 
-- `pulumi preview` → no planning errors.
-- `pulumi up` → successful deployment (3 created, 6 replaced, 0 errors).
+```bash
+ssh -i key.pem -J ubuntu@<bastion_floating_ip> ubuntu@<private_vm_ip>
+```
 
-## 8. Remaining (next phase, owned by LB teammate)
+Application traffic:
 
-- Load balancer creation, listener, pool/members, health checks
-- Floating IP for LB VIP
-- Application deployment (Ansible)
-- End-to-end HA test (simulated node failure)
+```text
+Internet -> HAProxy floating IP -> app-vm-1/app-vm-2 -> db-vm
+```
+
+## 7. Stack outputs
+
+Expected Pulumi outputs include:
+
+`network_id`, `subnet_id`, `bastion_security_group_id`, `lb_security_group_id`, `app_security_group_id`, `db_security_group_id`, `bastion_vm_id`, `bastion_port_id`, `bastion_floating_ip`, `app_vm_1_id`, `app_vm_2_id`, `db_vm_id`, `app_port_1_id`, `app_port_2_id`, `db_port_id`, `db_volume_id`.
+
+## 8. Validation checklist
+
+- `pulumi up` completes successfully.
+- `openstack server list` shows bastion, HAProxy/LB, app, and DB VMs as `ACTIVE`.
+- Bastion port has non-empty `binding_host_id` and `binding_vif_type`.
+- Bastion floating IP is associated to the bastion port.
+- App and DB VMs have private IPs only.
+- SSH to private VMs works through the bastion.
+- HTTP/HTTPS reaches HAProxy via its floating IP.
