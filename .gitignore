@@ -24,4 +24,19 @@ openrc.sh
 
 
 userdata.py 
-#we used instead the cloud init 
+#we used instead the cloud init
+
+# --- Secrets ---
+group_vars/vault.yml
+.vault_pass
+*.env
+!**/templates/*.env.j2
+
+# --- Ansible ---
+inventory/hosts.ini
+*.retry
+roles/**/*.retry
+
+# --- Divers ---
+.DS_Store
+*.log
