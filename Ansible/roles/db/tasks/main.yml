@@ -1,0 +1,187 @@
+---
+# Provisions PostgreSQL 16 and Redis 7 on the data-tier host, using the
+# Cinder-backed volume attached in infra/compute.py. Runs both services
+# via rootless Podman, matching the runtime used on the app tier.
+
+- name: Check whether the data volume is already mounted from a previous run
+  ansible.builtin.set_fact:
+    existing_data_mount: "{{ ansible_mounts | selectattr('mount', 'equalto', db_data_mount) | list }}"
+
+- name: Discover the attached data volume (excludes the root disk and any disk already in use)
+  ansible.builtin.shell: |
+    set -o pipefail
+    lsblk --json -b -o NAME,TYPE,SIZE,FSTYPE,MOUNTPOINT | python3 -c "
+    import json, sys
+    data = json.load(sys.stdin)
+
+    def usable(dev):
+        if dev.get('type') != 'disk':
+            return False
+        if (dev.get('size') or 0) < 1073741824:   # exclude tiny/removable devices
+            return False
+        if dev.get('fstype'):
+            return False
+        if dev.get('mountpoint'):
+            return False
+        if dev.get('children'):   # has partitions -> already in use
+            return False
+        return True
+
+    for dev in data.get('blockdevices', []):
+        if usable(dev):
+            print(dev['name'])
+            break
+    "
+  args:
+    executable: /bin/bash
+  register: data_disk_name
+  changed_when: false
+  when: existing_data_mount | length == 0
+
+- name: Fail early with a clear message if no free disk was found
+  ansible.builtin.fail:
+    msg: >
+      No unmounted block device found for the Postgres data volume.
+      Run `lsblk` on this host and set db_data_device explicitly in
+      group_vars/all/vars.yml if device naming differs on this provider.
+      See docs/troubleshooting-guide.md #4 if this is expected (pilot/test
+      host with no separate Cinder volume attached).
+  when:
+    - existing_data_mount | length == 0
+    - data_disk_name.stdout | length == 0
+    - db_data_device is not defined
+
+- name: Set the data device fact
+  ansible.builtin.set_fact:
+    resolved_db_data_device: >-
+      {{
+        existing_data_mount[0].device
+        if existing_data_mount | length > 0
+        else (db_data_device | default('/dev/' + data_disk_name.stdout))
+      }}
+
+- name: Safety check — confirm the resolved device is not mounted anywhere
+  ansible.builtin.shell: |
+    set -o pipefail
+    lsblk -no MOUNTPOINT {{ resolved_db_data_device }} 2>/dev/null | grep -v '^$' || true
+  args:
+    executable: /bin/bash
+  register: device_in_use
+  changed_when: false
+  when: existing_data_mount | length == 0
+
+- name: Refuse to proceed if the resolved device is actually in use
+  ansible.builtin.fail:
+    msg: >
+      Refusing to format {{ resolved_db_data_device }} — it (or a partition
+      on it) is mounted somewhere. Set db_data_device explicitly in
+      group_vars/db.yml instead of relying on auto-detection.
+  when: existing_data_mount | length == 0 and device_in_use.stdout | trim | length > 0
+
+- name: Format the data volume (ext4) — only if it has no filesystem yet
+  community.general.filesystem:
+    fstype: ext4
+    dev: "{{ resolved_db_data_device }}"
+
+- name: Ensure /data itself is traversable
+  ansible.builtin.file:
+    path: /data
+    state: directory
+    mode: "0755"
+
+- name: Create the data mount point
+  ansible.builtin.file:
+    path: "{{ db_data_mount }}"
+    state: directory
+    mode: "0755"
+
+- name: Mount the data volume persistently
+  ansible.posix.mount:
+    path: "{{ db_data_mount }}"
+    src: "{{ resolved_db_data_device }}"
+    fstype: ext4
+    state: mounted
+
+- name: Ensure Postgres data subdirectory exists with correct ownership
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    # Owned by the deploying user, not Postgres's internal container UID —
+    # rootless Podman runs as this host user and remaps container UIDs on
+    # top of that automatically (see the :U mount flag in the compose file).
+    owner: "{{ ansible_user }}"
+    group: "{{ ansible_user }}"
+    mode: "0750"
+  loop:
+    - "{{ db_data_mount }}/postgres"
+
+- name: Ensure Redis data subdirectory exists
+  ansible.builtin.file:
+    path: "{{ db_data_mount }}/redis"
+    state: directory
+    owner: "{{ ansible_user }}"
+    group: "{{ ansible_user }}"
+    mode: "0750"
+
+- name: Create deploy directory for db-tier compose file
+  ansible.builtin.file:
+    path: "{{ hackership_deploy_dir }}"
+    state: directory
+    owner: "{{ ansible_user }}"
+    group: "{{ ansible_user }}"
+    mode: "0750"
+
+- name: Deploy podman-compose.yml (postgres + redis)
+  ansible.builtin.template:
+    src: podman-compose.yml.j2
+    dest: "{{ hackership_deploy_dir }}/podman-compose.yml"
+    owner: "{{ ansible_user }}"
+    group: "{{ ansible_user }}"
+    mode: "0640"
+  register: db_compose_file
+
+- name: Deploy systemd unit for the db tier
+  ansible.builtin.template:
+    src: hackership-db.service.j2
+    dest: /etc/systemd/system/hackership-db.service
+    mode: "0644"
+  register: db_systemd_unit
+
+- name: Reload systemd if the unit changed
+  ansible.builtin.systemd:
+    daemon_reload: true
+  when: db_systemd_unit.changed
+
+- name: (Re)start and enable the db tier
+  ansible.builtin.systemd:
+    name: hackership-db
+    state: restarted
+    enabled: true
+  when: db_compose_file.changed or db_systemd_unit.changed
+
+- name: Start the db tier if not already running
+  ansible.builtin.systemd:
+    name: hackership-db
+    state: started
+    enabled: true
+
+- name: Wait for PostgreSQL to accept connections
+  ansible.builtin.command: >
+    podman exec hackership-postgres pg_isready -U {{ postgres_user }}
+  register: pg_ready
+  changed_when: false
+  retries: 12
+  delay: 5
+  until: pg_ready.rc == 0
+  become: true
+  become_user: "{{ ansible_user }}"
+
+- name: Wait for Redis to accept connections
+  ansible.builtin.command: podman exec hackership-redis redis-cli ping
+  register: redis_ready
+  changed_when: false
+  retries: 12
+  delay: 5
+  until: "'PONG' in redis_ready.stdout"
+  become: true
+  become_user: "{{ ansible_user }}"

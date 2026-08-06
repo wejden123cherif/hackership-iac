@@ -1,0 +1,58 @@
+---
+- name: Update apt cache
+  apt:
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Install base packages
+  apt:
+    name:
+      - curl
+      - git
+      - vim
+      - build-essential
+      - chrony
+      - unattended-upgrades
+      - ca-certificates
+      - gnupg
+    state: present
+
+- name: Install Podman + podman-compose (runtime for the app container)
+  apt:
+    name:
+      - podman
+      - podman-compose
+    state: present
+
+- name: Enable chrony (NTP sync)
+  systemd:
+    name: chrony
+    enabled: true
+    state: started
+
+- name: Create deploy directory
+  file:
+    path: "{{ hackership_deploy_dir }}"
+    state: directory
+    owner: "{{ ansible_user }}"
+    group: "{{ ansible_user }}"
+    mode: "0750"
+
+- name: Enable linger for the deploy user (rootless Podman services persist across logout)
+  command: "loginctl enable-linger {{ ansible_user }}"
+  changed_when: false
+
+# --- Monitoring agent (node_exporter) ---
+# Placeholder
+- name: Install node_exporter
+  apt:
+    name: prometheus-node-exporter
+    state: present
+  when: enable_node_exporter | default(false)
+
+- name: Enable node_exporter
+  systemd:
+    name: prometheus-node-exporter
+    enabled: true
+    state: started
+  when: enable_node_exporter | default(false)

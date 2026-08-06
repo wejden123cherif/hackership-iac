@@ -1,0 +1,76 @@
+---
+- name: Cloner / mettre à jour le dépôt applicatif Hackership
+  git:
+    repo: "{{ hackership_repo_url }}"
+    dest: "{{ hackership_deploy_dir }}/src"
+    version: "{{ hackership_version }}"
+    force: true
+  become: true
+  become_user: "{{ ansible_user }}"
+  register: app_checkout
+
+- name: Déployer le fichier .env applicatif (noms alignés sur .env.example du repo)
+  template:
+    src: app.env.j2
+    dest: "{{ hackership_deploy_dir }}/app.env"
+    owner: "{{ ansible_user }}"
+    group: "{{ ansible_user }}"
+    mode: "0600"
+
+- name: Déployer le podman-compose.yml (nginx + web)
+  template:
+    src: podman-compose.yml.j2
+    dest: "{{ hackership_deploy_dir }}/podman-compose.yml"
+    owner: "{{ ansible_user }}"
+    group: "{{ ansible_user }}"
+    mode: "0640"
+  register: compose_file
+
+- name: Déployer le service systemd
+  template:
+    src: hackership.service.j2
+    dest: /etc/systemd/system/hackership.service
+    mode: "0644"
+  register: systemd_unit
+
+- name: Recharger systemd si le service a changé
+  systemd:
+    daemon_reload: true
+  when: systemd_unit.changed
+
+# --- Migrations : exécutées une seule fois (depuis app1), plutôt que dans la
+# commande de démarrage du conteneur, pour éviter tout run concurrent des
+# migrations sur plusieurs nœuds en même temps au premier déploiement. ---
+- name: Construire l'image applicative (nécessaire avant de lancer les migrations)
+  command: >
+    podman build -t hackership-app:{{ hackership_version }}
+    -f {{ hackership_deploy_dir }}/src/Dockerfile
+    {{ hackership_deploy_dir }}/src
+  become: true
+  become_user: "{{ ansible_user }}"
+  when: app_checkout.changed or (compose_file.changed | default(false))
+
+- name: Exécuter les migrations Flask-Migrate (une seule fois, depuis app1)
+  command: >
+    podman run --rm --env-file {{ hackership_deploy_dir }}/app.env
+    --network host
+    hackership-app:{{ hackership_version }} flask db upgrade
+  become: true
+  become_user: "{{ ansible_user }}"
+  run_once: true
+  delegate_to: "{{ groups['app'][0] }}"
+
+- name: (Re)démarrer et activer le service applicatif
+  systemd:
+    name: hackership
+    state: restarted
+    enabled: true
+
+- name: Attendre que l'application réponde via Nginx (healthcheck_path)
+  uri:
+    url: "http://127.0.0.1:80{{ healthcheck_path }}"
+    status_code: 200
+  register: health_result
+  retries: 12
+  delay: 5
+  until: health_result.status == 200

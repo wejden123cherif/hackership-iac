@@ -1,0 +1,21 @@
+---
+
+# Usage : ansible-playbook site.yml --ask-vault-pass
+
+- name: Provisionnement du nœud de données (PostgreSQL + Redis)
+  hosts: db
+  become: true
+  roles:
+    - base
+    - security
+    - db
+
+- name: Provisionnement des nœuds applicatifs Hackership
+  hosts: app
+  become: true
+  serial: 1
+  roles:
+    - base
+    - security
+    - reverse_proxy
+    - hackership_app

@@ -1,0 +1,64 @@
+---
+# Défense en profondeur au niveau OS. Le filtrage principal (qui peut parler à
+# qui) est censé être fait par les security groups OpenStack de Person 1 —
+# ce rôle ne s'y substitue pas, il ajoute une couche supplémentaire sur l'hôte.
+
+- name: Install ufw and fail2ban
+  apt:
+    name:
+      - ufw
+      - fail2ban
+    state: present
+
+- name: Ensure openssh-server is installed (sshd_config won't exist otherwise)
+  ansible.builtin.apt:
+    name: openssh-server
+    state: present
+
+- name: SSH hardening — disable root login
+  lineinfile:
+    path: /etc/ssh/sshd_config
+    regexp: '^#?PermitRootLogin'
+    line: 'PermitRootLogin no'
+  notify: restart sshd
+
+- name: SSH hardening — disable password authentication (keys only)
+  lineinfile:
+    path: /etc/ssh/sshd_config
+    regexp: '^#?PasswordAuthentication'
+    line: 'PasswordAuthentication no'
+  notify: restart sshd
+
+- name: UFW default policy — deny incoming
+  community.general.ufw:
+    policy: deny
+    direction: incoming
+
+- name: UFW default policy — allow outgoing
+  community.general.ufw:
+    policy: allow
+    direction: outgoing
+
+- name: UFW — allow SSH only from the bastion
+  community.general.ufw:
+    rule: allow
+    port: "22"
+    proto: tcp
+    from_ip: "{{ bastion_private_ip }}"
+
+- name: UFW — allow required ports for this host's role
+  community.general.ufw:
+    rule: allow
+    port: "{{ item }}"
+    proto: tcp
+  loop: "{{ ufw_allowed_tcp_ports }}"
+
+- name: Enable UFW
+  community.general.ufw:
+    state: enabled
+
+- name: Enable fail2ban
+  systemd:
+    name: fail2ban
+    enabled: true
+    state: started
